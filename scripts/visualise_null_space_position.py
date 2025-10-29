@@ -12,7 +12,7 @@ import mujoco
 from mujoco import viewer
 
 # ----------------- user knobs -----------------
-XML_PATH = "/home/iitgn-robotics/Debojit_WS/manipulability-optimization/mujoco_menagerie/franka_emika_panda/scene.xml"
+XML_PATH = "/home/iitgn-robotics/Debojit_WS/manipulability-optimization/robot_description/franka_emika_panda/scene.xml"
 EE_BODY_NAME = "hand"          # from your XML
 ARM_JOINTS = ["joint1","joint2","joint3","joint4","joint5","joint6","joint7"]
 DT = 1.0/300.0

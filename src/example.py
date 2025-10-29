@@ -5,11 +5,10 @@ import os, sys
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, repo_root)
 # ---------------------------------------------
-from utils.nullspace_opt.nullspace_opt import NullSpaceOptimizer
 
 from utils.nullspace_opt.nullspace_opt import NullSpaceOptimizer
 
-XML = "/home/iitgn-robotics/Debojit_WS/manipulability-optimization/mujoco_menagerie/franka_emika_panda/scene.xml"
+XML = "/home/iitgn-robotics/Debojit_WS/manipulability-optimization/robot_description/franka_emika_panda/scene.xml"
 m = mujoco.MjModel.from_xml_path(XML)
 d = mujoco.MjData(m)
 
