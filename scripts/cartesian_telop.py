@@ -20,7 +20,7 @@ ARM_JOINTS    = ["joint1","joint2","joint3","joint4","joint5","joint6","joint7"]
 DT            = 1.0/300.0              # control dt (s)
 LIN_SPEED     = 0.05                   # m/s per key
 ANG_SPEED     = 0.5                    # rad/s per key
-LAMBDA        = 1e-2                   # DLS damping (0.01)
+LAMBDA        = 0.1                   # DLS damping (0.01)
 GRIPPER_OPEN  = 255.0                  # keep tendon/gripper open if present
 
 # Key map: build 6D twist [vx, vy, vz, wx, wy, wz]
