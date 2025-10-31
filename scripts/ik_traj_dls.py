@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-Pose IK with DLS (world-frame target) — holds target indefinitely.
-- Drives EE "hand" body to a target position and orientation (world frame).
-- Uses 6-DoF twist servo: xd = [vx, vy, vz, wx, wy, wz]
-- Orientation error uses quaternion log map (robust small/large-angle).
+Pose IK with DLS (world-frame target) — trajectory to target + hold.
+- Interpolates from current EE pose to target (world) over TRAJ_TIME seconds.
+- Position uses linear interpolation; orientation uses SLERP.
+- After reaching the target, continues to hold it indefinitely.
 
-No teleop. The script does NOT auto-stop on convergence; it keeps holding
-the target until you close the viewer window.
+xd = [vx, vy, vz, wx, wy, wz]; orientation error uses quaternion log map.
 """
 
 import numpy as np
@@ -18,10 +17,10 @@ from mujoco import viewer
 # =========================
 XML_PATH      = "/home/iitgn-robotics/Debojit_WS/manipulability-optimization/robot_description/franka_emika_panda/scene.xml"
 ARM_JOINTS    = ["joint1","joint2","joint3","joint4","joint5","joint6","joint7"]
-EE_BODY_NAME  = "hand"                # end-effector body name in MJCF
+EE_BODY_NAME  = "hand"  # end-effector body name in MJCF
 
 DT            = 1.0/300.0             # control dt (s)
-LAMBDA        = 1e-2                  # DLS damping (0.01 .. 0.1 usually fine)
+LAMBDA        = 1e-2                  # DLS damping
 K_POS         = 2.0                   # m/s per m position error
 K_ANG         = 2.0                   # rad/s per rad orientation error
 VEL_LIN_MAX   = 0.25                  # m/s clamp
@@ -30,16 +29,16 @@ VEL_ANG_MAX   = 2.0                   # rad/s clamp
 POS_TOL       = 1e-3                  # m
 ANG_TOL       = 1e-2                  # rad (angle-axis norm)
 
-GRIPPER_OPEN  = 255.0                 # keep tendon/gripper open if present (optional)
+GRIPPER_OPEN  = 255.0                 # keep tendon/gripper open if present
+
+# ---- Trajectory knobs ----
+TRAJ_TIME       = 10.0                 # seconds to go from start -> goal
+USE_MINJERK     = True                # smooth easing (5th-order); else linear
 
 # ---- Target Pose (WORLD frame) ----
-# Option A: set with RPY degrees (ZYX convention: Rz(yaw)*Ry(pitch)*Rx(roll))
 TARGET_POS_W    = np.array([0.25, 0.40, 0.45])      # meters (x,y,z in world)
-TARGET_RPY_DEG  = (0.0, 0.0, 0.0)                  # roll, pitch, yaw in degrees
-
-# Option B: or set quaternion directly (w, x, y, z). If not None, overrides RPY.
-TARGET_QUAT_W   = None
-# Example: TARGET_QUAT_W = np.array([0.7071, 0.0, 0.0, 0.7071])  # 90 deg about z
+TARGET_RPY_DEG  = (0.0, 20.0, 0.0)                   # roll, pitch, yaw in degrees
+TARGET_QUAT_W   = None  # if set (w,x,y,z), overrides RPY. e.g., np.array([0.7071, 0,0,0.7071])
 
 
 # =========================
@@ -53,16 +52,17 @@ def clamp_to_limits(q, model, joint_ids):
     return out
 
 def dls_pseudoinverse(J, lam):
-    """Right DLS pseudoinverse for fat J (6x7): J^T (J J^T + lam^2 I)^-1."""
     JJt = J @ J.T
     return J.T @ np.linalg.inv(JJt + (lam**2) * np.eye(J.shape[0]))
 
 def quat_normalize(q):
     q = np.asarray(q, dtype=float)
-    return q / np.linalg.norm(q)
+    n = np.linalg.norm(q)
+    if n == 0:
+        return np.array([1.0, 0.0, 0.0, 0.0])
+    return q / n
 
 def quat_mul(q1, q2):
-    """(w,x,y,z)*(w,x,y,z)"""
     w1,x1,y1,z1 = q1
     w2,x2,y2,z2 = q2
     return np.array([
@@ -77,11 +77,10 @@ def quat_conj(q):
     return np.array([w, -x, -y, -z])
 
 def euler_zyx_to_quat(roll, pitch, yaw):
-    """RPY (rad) -> quaternion (w,x,y,z) for Rz(yaw)*Ry(pitch)*Rx(roll)."""
+    # Rz(yaw)*Ry(pitch)*Rx(roll)
     cr = np.cos(roll*0.5);  sr = np.sin(roll*0.5)
     cp = np.cos(pitch*0.5); sp = np.sin(pitch*0.5)
     cy = np.cos(yaw*0.5);   sy = np.sin(yaw*0.5)
-    # Z * Y * X
     w = cy*cp*cr + sy*sp*sr
     x = cy*cp*sr - sy*sp*cr
     y = cy*sp*cr + sy*cp*sr
@@ -89,10 +88,9 @@ def euler_zyx_to_quat(roll, pitch, yaw):
     return quat_normalize(np.array([w,x,y,z]))
 
 def mat_to_quat(R):
-    """Rotation matrix (3x3) -> quaternion (w,x,y,z)."""
     R = np.asarray(R).reshape(3,3)
     t = np.trace(R)
-    if t > 0.0:
+    if t > 0:
         s = np.sqrt(t+1.0)*2.0
         w = 0.25*s
         x = (R[2,1]-R[1,2])/s
@@ -121,11 +119,7 @@ def mat_to_quat(R):
     return quat_normalize(np.array([w,x,y,z]))
 
 def quat_log_error(q_cur, q_des):
-    """
-    Quaternion orientation error (vector in R^3) via log map.
-    Returns angle-axis vector: angle * axis (rad).
-    We compute q_err = q_des * conj(q_cur), enforce hemisphere (w>=0).
-    """
+    # q_err = q_des * conj(q_cur), hemisphere (w>=0), return angle*axis (3,)
     q_cur = quat_normalize(q_cur)
     q_des = quat_normalize(q_des)
     q_err = quat_mul(q_des, quat_conj(q_cur))
@@ -134,14 +128,35 @@ def quat_log_error(q_cur, q_des):
     w, x, y, z = q_err
     v = np.array([x, y, z])
     s = np.linalg.norm(v)
-    if s < 1e-8:  # small-angle
+    if s < 1e-8:
         return 2.0 * v
     angle = 2.0 * np.arctan2(s, w)
     axis  = v / s
     return angle * axis
 
+def slerp(q0, q1, u):
+    """Spherical linear interpolation between quats q0->q1 at fraction u∈[0,1]."""
+    q0 = quat_normalize(q0); q1 = quat_normalize(q1)
+    dot = np.dot(q0, q1)
+    # Hemisphere fix
+    if dot < 0.0:
+        q1 = -q1
+        dot = -dot
+    # If very close, fall back to lerp
+    if dot > 0.9995:
+        q = q0 + u*(q1 - q0)
+        return quat_normalize(q)
+    theta0 = np.arccos(dot)
+    sin0   = np.sin(theta0)
+    s0 = np.sin((1.0 - u) * theta0) / sin0
+    s1 = np.sin(u * theta0) / sin0
+    return s0 * q0 + s1 * q1
+
+def minjerk(u):
+    """5th-order time-scaling (0->1)."""
+    return u**3 * (10 - 15*u + 6*u*u)
+
 def get_body_pose_world(data, bid):
-    """Returns (pos_W, quat_W) of a body (world frame)."""
     if hasattr(data, "xpos"):
         p = data.xpos[bid].copy()
     elif hasattr(data, "xipos"):
@@ -186,55 +201,74 @@ def load_model_and_indices():
 
 
 # =========================
-# Main loop (IK servo)
+# Main loop (IK + trajectory)
 # =========================
 def run():
     model, data, joint_ids, qaddr, daddr, ee_bid = load_model_and_indices()
 
-    # Choose target quaternion
+    # Target quaternion
     if TARGET_QUAT_W is None:
         roll, pitch, yaw = np.deg2rad(TARGET_RPY_DEG)
-        q_W_des = euler_zyx_to_quat(roll, pitch, yaw)
+        q_goal = euler_zyx_to_quat(roll, pitch, yaw)
     else:
-        q_W_des = quat_normalize(TARGET_QUAT_W)
-    p_W_des = TARGET_POS_W.astype(float).copy()
+        q_goal = quat_normalize(TARGET_QUAT_W)
+    p_goal = TARGET_POS_W.astype(float).copy()
 
-    # Initial joint ref from current state
+    # Initial state
     q_ref = data.qpos[qaddr].copy()
+    p_start, q_start = get_body_pose_world(data, ee_bid)
 
     # Keep gripper open if present
     if model.nu >= 8:
         data.ctrl[7] = GRIPPER_OPEN
 
-    print("\n=== Pose IK (world-frame target — HOLD MODE) ===")
-    print(f"Target position (m): {p_W_des}")
-    print(f"Target quaternion (w,x,y,z): {q_W_des}\n")
-
+    # Timing
+    t0 = data.time
     printed_converged = False
+    printed_traj_done = False
+
+    print("\n=== Pose IK (trajectory -> hold) ===")
+    print(f"Start position: {p_start}, Start quat (wxyz): {q_start}")
+    print(f"Goal  position: {p_goal},  Goal  quat (wxyz): {q_goal}")
+    print(f"TRAJ_TIME = {TRAJ_TIME}s, easing = {'minjerk' if USE_MINJERK else 'linear'}\n")
 
     with viewer.launch_passive(model, data, show_left_ui=False, show_right_ui=False) as v:
         while v.is_running():
             mujoco.mj_forward(model, data)
 
-            # Current EE pose in world
-            p_W_cur, q_W_cur = get_body_pose_world(data, ee_bid)
+            # Trajectory progress 0..1
+            u = (data.time - t0) / TRAJ_TIME
+            if u < 0.0: u = 0.0
+            if u > 1.0: u = 1.0
+            s = minjerk(u) if USE_MINJERK else u
+
+            # Interpolated desired pose in WORLD
+            p_des = (1.0 - s) * p_start + s * p_goal
+            q_des = slerp(q_start, q_goal, s)
+
+            if (not printed_traj_done) and (u >= 1.0):
+                printed_traj_done = True
+                print("[Trajectory complete] Now holding final pose.")
+
+            # Current EE pose
+            p_cur, q_cur = get_body_pose_world(data, ee_bid)
 
             # Errors (world frame)
-            e_pos = (p_W_des - p_W_cur)               # m
-            e_ang = quat_log_error(q_W_cur, q_W_des)  # rad-axis (3,)
+            e_pos = (p_des - p_cur)
+            e_ang = quat_log_error(q_cur, q_des)
 
             pos_err_norm = np.linalg.norm(e_pos)
             ang_err_norm = np.linalg.norm(e_ang)
 
-            # Log convergence once (no stopping)
-            if not printed_converged and (pos_err_norm <= POS_TOL) and (ang_err_norm <= ANG_TOL):
+            # Log first convergence to the *moving* target (or final target once u=1)
+            if (not printed_converged) and (pos_err_norm <= POS_TOL) and (ang_err_norm <= ANG_TOL):
                 printed_converged = True
                 print(f"[Converged] |e_pos|={pos_err_norm:.4e}, |e_ang|={ang_err_norm:.4e}")
 
-            # Desired twist (world): proportional servo with per-norm clamping
+            # Proportional twist command with clamping
             v_des = K_POS * e_pos
             w_des = K_ANG * e_ang
-            # clamp norms
+
             v_norm = np.linalg.norm(v_des)
             if v_norm > VEL_LIN_MAX and v_norm > 0.0:
                 v_des *= (VEL_LIN_MAX / v_norm)
@@ -244,17 +278,16 @@ def run():
 
             xd = np.hstack([v_des, w_des])  # (6,)
 
-            # EE Jacobian at body "hand": 6x7
+            # Jacobian 6x7 (body "hand"), then DLS IK
             jacp = np.zeros((3, model.nv))
             jacr = np.zeros((3, model.nv))
             mujoco.mj_jacBody(model, data, jacp, jacr, ee_bid)
             J = np.vstack([jacp[:, daddr], jacr[:, daddr]])  # 6x7
 
-            # DLS IK: qdot = J^† xd
             J_pinv = dls_pseudoinverse(J, LAMBDA)            # 7x6
-            qdot   = J_pinv @ xd                              # (7,)
+            qdot   = J_pinv @ xd
 
-            # Integrate & clamp, then command position actuators
+            # Integrate, clamp, and command
             q_ref = clamp_to_limits(q_ref + DT * qdot, model, joint_ids)
             data.ctrl[0:7] = q_ref
             if model.nu >= 8:
@@ -263,15 +296,16 @@ def run():
             mujoco.mj_step(model, data)
             v.sync()
 
-    # Final report after you close the viewer
+    # Final report after closing viewer
     mujoco.mj_forward(model, data)
-    p_W_cur, q_W_cur = get_body_pose_world(data, ee_bid)
-    e_pos = p_W_des - p_W_cur
-    e_ang = quat_log_error(q_W_cur, q_W_des)
-    print("\nFinal pose error:")
+    p_final, q_final = get_body_pose_world(data, ee_bid)
+    e_pos = p_goal - p_final
+    e_ang = quat_log_error(q_final, q_goal)
+    print("\nFinal pose error (vs goal):")
     print(f"  |pos| = {np.linalg.norm(e_pos):.6f} m,  e_pos = {e_pos}")
     print(f"  |ang| = {np.linalg.norm(e_ang):.6f} rad, e_ang = {e_ang}")
     print("Viewer closed. Exiting.")
+
 
 # =========================
 # Entry
