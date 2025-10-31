@@ -9,7 +9,7 @@ sys.path.insert(0, repo_root)
 
 from utils.ik.ik_qp import IKQPController
 
-XML = "mujoco_menagerie/franka_emika_panda/scene.xml"
+XML = "/home/iitgn-robotics/Debojit_WS/manipulability-optimization/robot_description/franka_emika_panda/scene.xml"
 
 def axis_angle_to_quat(axis, angle_rad):
     axis = np.asarray(axis, dtype=float)
