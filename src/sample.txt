@@ -1,0 +1,4 @@
+# ---- Target Pose (WORLD frame) ----
+TARGET_POS_W    = np.array([0.15, -0.40, 0.2])      # meters (x,y,z in world)
+TARGET_RPY_DEG  = (45.0, 0.0, 0.0)                   # roll, pitch, yaw in degrees
+TARGET_QUAT_W   = None  # if set (w,x,y,z), overrides RPY. e.g., np.array([0.7071, 0,0,0.7071])

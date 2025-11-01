@@ -34,11 +34,11 @@ ANG_TOL       = 1e-2                  # rad (angle-axis norm)
 GRIPPER_OPEN  = 255.0                 # keep tendon/gripper open if present
 
 # ---- Trajectory knobs ----
-TRAJ_TIME       = 10.0                # seconds to go from start -> goal
+TRAJ_TIME       = 20.0                # seconds to go from start -> goal
 USE_MINJERK     = True                # smooth easing (5th-order); else linear
 
 # ---- Null-space manipulability maximization ----
-NS_GAIN              = 0.0         # <— scale of manipulability-ascent velocity (0.2–1.5 typical)
+NS_GAIN              = 1.0         # <— scale of manipulability-ascent velocity (0.2–1.5 typical)
 NS_EPS_FD            = 1e-4           # finite-difference step [rad] for gradient of logdet
 MANIP_LOGDET_REG     = 1e-8           # small I regularization in JJ^T before logdet
 NS_CLAMP             = 1.0            # clamp ||qdot_ns_des|| (rad/s) before projection; set None to disable
@@ -47,11 +47,6 @@ NS_EVERY             = 5              # compute gradient every K ticks (reuse in
 # ---- Target Pose (WORLD frame) ----
 TARGET_POS_W    = np.array([0.25, 0.40, 0.45])      # meters (x,y,z in world)
 TARGET_RPY_DEG  = (0.0, 20.0, 0.0)                   # roll, pitch, yaw in degrees
-TARGET_QUAT_W   = None  # if set (w,x,y,z), overrides RPY. e.g., np.array([0.7071, 0,0,0.7071])
-
-# ---- Target Pose (WORLD frame) ----
-TARGET_POS_W    = np.array([0.20, -0.20, 0.4])      # meters (x,y,z in world)
-TARGET_RPY_DEG  = (-45.0, 35.0, -20.0)                   # roll, pitch, yaw in degrees
 TARGET_QUAT_W   = None  # if set (w,x,y,z), overrides RPY. e.g., np.array([0.7071, 0,0,0.7071])
 
 
